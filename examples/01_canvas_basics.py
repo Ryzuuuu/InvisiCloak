@@ -16,8 +16,13 @@ cv2.rectangle(canvas, (100, 100), (300, 250), (255, 0, 0), 3)
 cv2.circle(canvas, (450, 200), 50, (0, 255, 0), -1)
 
 cv2.putText(
-    canvas, "Hello Vision!", (100, 320),
-    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2,
+    canvas,
+    "Hello Vision!",
+    (100, 320),
+    cv2.FONT_HERSHEY_SIMPLEX,
+    1.2,
+    (255, 255, 255),
+    2,
 )
 
 cv2.imshow("Lesson 1: Canvas & Matrix", canvas)
