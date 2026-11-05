@@ -1,3 +1,9 @@
-opencv-python
+# Tested with Python 3.11. MediaPipe 0.10.21 ships wheels for Python 3.9-3.12.
 mediapipe==0.10.21
-numpy
+
+# MediaPipe 0.10.21 requires NumPy 1.x.
+numpy>=1.26,<2
+
+# MediaPipe depends on opencv-contrib-python; requiring the same package here avoids
+# having both opencv-python and opencv-contrib-python installed side by side.
+opencv-contrib-python>=4.8,<4.12
