@@ -1,0 +1,36 @@
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Packaging and build output
+build/
+dist/
+*.egg-info/
+
+# Local configuration and secrets
+.env
+.env.*
+
+# Captured media and large local files (add small demo assets under docs/ explicitly)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+captures/
+output/
+
+# Editors and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
