@@ -1,315 +1,184 @@
-# ============================================================
-# INVISIBLE PORTAL USING HAND GESTURES
-# ============================================================
-# This program uses your webcam to create an "invisibility portal".
-# Make a rectangle with your thumbs and index fingers (both hands),
-# and everything inside that rectangle becomes invisible — replaced
-# by the background captured when the program started.
-# ============================================================
+"""Invisible Portal: hide whatever is inside a rectangle you form with both hands.
 
+The webcam background is captured once at start-up. While the program runs,
+MediaPipe tracks both hands and the bounding box of the four fingertips (thumb
+tip and index fingertip of each hand) becomes the "portal". Pixels inside the
+portal are replaced with the saved background, so anything standing in front of
+it appears to vanish.
 
-# ============================================================
-# SECTION 1: IMPORT LIBRARIES
-# ============================================================
+Controls: press 'q' (or Esc) to quit.
+"""
 
-import cv2                # OpenCV — for webcam capture, drawing, image processing
-import mediapipe as mp    # MediaPipe — for hand detection and finger tracking
-import numpy as np        # NumPy — for array operations on images
+import sys
+import time
 
+import cv2
+import mediapipe as mp
 
-# ============================================================
-# SECTION 2: INITIALIZE MEDIAPIPE HANDS
-# ============================================================
+CAMERA_INDEX = 0
+WINDOW_TITLE = "Invisible Portal - Press Q to Quit"
 
-# mp.solutions.hands gives us the hand detection model
+COUNTDOWN_SECONDS = 3  # time to step out of the frame before the background is taken
+WARMUP_FRAMES = 30  # frames discarded so auto-exposure and focus can settle
+MIN_PORTAL_SIZE = 20  # portal must be larger than this (pixels) in both dimensions
+PORTAL_COLOR = (0, 255, 0)  # BGR green
+QUIT_KEYS = (ord("q"), ord("Q"), 27)  # 27 = Esc
+
 mp_hands = mp.solutions.hands
-
-# Create a Hands detector object with these settings:
-#   - static_image_mode=False : we are processing a video stream (not single images)
-#   - max_num_hands=2         : detect up to 2 hands (we need both)
-#   - min_detection_confidence=0.7 : how confident the model must be to detect a hand
-#   - min_tracking_confidence=0.5  : how confident the model must be to keep tracking
-hands_detector = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=2,
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.5
-)
-
-# mp.solutions.drawing_utils helps draw hand landmarks on the frame
 mp_drawing = mp.solutions.drawing_utils
 
 
-# ============================================================
-# SECTION 3: INITIALIZE WEBCAM
-# ============================================================
+def read_mirrored_frame(webcam):
+    """Read one frame and flip it horizontally so the view behaves like a mirror.
 
-# Open the default webcam (index 0)
-webcam = cv2.VideoCapture(0)
-
-# Check if the webcam opened successfully
-if not webcam.isOpened():
-    print("ERROR: Could not open webcam.")
-    exit()
-
-# Read one frame to get the dimensions (height and width)
-success, test_frame = webcam.read()
-if not success:
-    print("ERROR: Could not read from webcam.")
-    webcam.release()
-    exit()
-
-# Get frame dimensions — we'll need these later for coordinate conversion
-frame_height, frame_width, _ = test_frame.shape
-print(f"Webcam resolution: {frame_width} x {frame_height}")
+    Returns None if the camera did not deliver a frame.
+    """
+    success, frame = webcam.read()
+    if not success or frame is None:
+        return None
+    return cv2.flip(frame, 1)
 
 
-# ============================================================
-# SECTION 4: CAPTURE BACKGROUND
-# ============================================================
-# We capture the background BEFORE the user steps into the frame.
-# This background will be shown inside the portal to create
-# the "invisibility" effect.
+def capture_background(webcam):
+    """Give the user time to step out of view, then grab a clean background frame.
 
-print("==============================================")
-print("  CAPTURING BACKGROUND IN 3 SECONDS...")
-print("  Please step out of the camera frame!")
-print("==============================================")
+    Returns the mirrored background image, or None if the camera stopped
+    delivering frames.
+    """
+    print("==============================================")
+    print(f"  CAPTURING BACKGROUND IN {COUNTDOWN_SECONDS} SECONDS...")
+    print("  Please step out of the camera frame!")
+    print("==============================================")
+    time.sleep(COUNTDOWN_SECONDS)
 
-# Wait 3 seconds so the user can move out of frame
-cv2.waitKey(3000)
+    # Read several frames and keep the last one: the first few are stale or
+    # badly exposed while the camera adjusts.
+    background = None
+    for _ in range(WARMUP_FRAMES):
+        background = read_mirrored_frame(webcam)
+        if background is None:
+            return None
+    return background
 
-# Capture multiple frames and use the last one — this helps the
-# camera auto-adjust brightness and focus for a better background
-background = None
-for i in range(30):
-    success, background = webcam.read()
-
-# Flip the background horizontally so it matches the mirror view
-# (webcam images are mirrored by default — flipping makes it natural)
-background = cv2.flip(background, 1)
-
-# Check if background was captured
-if background is None:
-    print("ERROR: Could not capture background.")
-    webcam.release()
-    exit()
-
-print("Background captured successfully!")
-print("Now step into the frame and use both hands to create a portal.")
-print("Press 'q' to quit.")
-
-
-# ============================================================
-# SECTION 5: HELPER FUNCTION — GET FINGERTIP COORDINATES
-# ============================================================
-# This function takes a hand's landmarks and returns the (x, y)
-# pixel positions of the THUMB TIP and INDEX FINGER TIP.
 
 def get_fingertip_positions(hand_landmarks, width, height):
-    """
-    Extract thumb tip and index finger tip positions from hand landmarks.
-    
-    Parameters:
-        hand_landmarks : the landmarks object from MediaPipe for one hand
-        width          : frame width in pixels
-        height         : frame height in pixels
-    
-    Returns:
-        thumb_tip  : (x, y) pixel coordinates of the thumb tip
-        index_tip  : (x, y) pixel coordinates of the index finger tip
-    """
-    # MediaPipe landmark IDs:
-    #   4  = THUMB_TIP
-    #   8  = INDEX_FINGER_TIP
-    # Landmarks are normalized (0.0 to 1.0), so we multiply by frame size
-    # to get actual pixel coordinates.
+    """Return the (x, y) pixel positions of the thumb tip and index fingertip.
 
-    # Get thumb tip position
+    MediaPipe landmarks are normalized to 0.0-1.0, so they are scaled by the
+    frame size to get pixel coordinates.
+    """
     thumb = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
-    thumb_x = int(thumb.x * width)
-    thumb_y = int(thumb.y * height)
-    thumb_tip = (thumb_x, thumb_y)
-
-    # Get index finger tip position
     index = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-    index_x = int(index.x * width)
-    index_y = int(index.y * height)
-    index_tip = (index_x, index_y)
-
+    thumb_tip = (int(thumb.x * width), int(thumb.y * height))
+    index_tip = (int(index.x * width), int(index.y * height))
     return thumb_tip, index_tip
 
 
-# ============================================================
-# SECTION 6: MAIN LOOP — PROCESS EACH FRAME
-# ============================================================
+def compute_portal_rect(points, width, height, min_size=MIN_PORTAL_SIZE):
+    """Return the portal as (x1, y1, x2, y2), or None if it is too small.
 
-while True:
-    # ---------------------------------------------------------
-    # STEP 6a: Read a frame from the webcam
-    # ---------------------------------------------------------
-    success, frame = webcam.read()
-    if not success:
-        print("ERROR: Could not read frame.")
-        break
+    The portal is the bounding box of the given fingertip points, clamped to
+    the frame so fingertips that leave the picture cannot index out of range.
+    """
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    x1, x2 = max(min(xs), 0), min(max(xs), width - 1)
+    y1, y2 = max(min(ys), 0), min(max(ys), height - 1)
 
-    # Flip the frame horizontally for a natural mirror view
-    frame = cv2.flip(frame, 1)
+    if x2 - x1 <= min_size or y2 - y1 <= min_size:
+        return None
+    return x1, y1, x2, y2
 
-    # ---------------------------------------------------------
-    # STEP 6b: Convert frame to RGB for MediaPipe
-    # ---------------------------------------------------------
-    # OpenCV uses BGR color format, but MediaPipe needs RGB
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    # ---------------------------------------------------------
-    # STEP 6c: Detect hands using MediaPipe
-    # ---------------------------------------------------------
-    # Process the RGB frame to find hands
-    results = hands_detector.process(rgb_frame)
+def apply_portal(frame, background, rect):
+    """Copy the background into the portal region of the frame (in place)."""
+    x1, y1, x2, y2 = rect
+    frame[y1 : y2 + 1, x1 : x2 + 1] = background[y1 : y2 + 1, x1 : x2 + 1]
+    return frame
 
-    # ---------------------------------------------------------
-    # STEP 6d: Check if BOTH hands are detected
-    # ---------------------------------------------------------
-    # results.multi_hand_landmarks is a list of detected hands
-    # It is None if no hands are found
-    both_hands_detected = (
-        results.multi_hand_landmarks is not None
-        and len(results.multi_hand_landmarks) >= 2
+
+def draw_portal_overlay(frame, rect):
+    """Outline the portal and label it."""
+    x1, y1, x2, y2 = rect
+    cv2.rectangle(frame, (x1, y1), (x2, y2), PORTAL_COLOR, 2)
+    cv2.putText(
+        frame,
+        "Portal Active",
+        (x1, max(y1 - 10, 20)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        PORTAL_COLOR,
+        2,
     )
 
-    if both_hands_detected:
-        # ---------------------------------------------------------
-        # STEP 6e: Get fingertip positions for both hands
-        # ---------------------------------------------------------
-        # Hand 0 (first hand detected)
-        hand_1 = results.multi_hand_landmarks[0]
-        thumb_1, index_1 = get_fingertip_positions(hand_1, frame_width, frame_height)
 
-        # Hand 1 (second hand detected)
-        hand_2 = results.multi_hand_landmarks[1]
-        thumb_2, index_2 = get_fingertip_positions(hand_2, frame_width, frame_height)
+def run_portal_loop(webcam, hands, background):
+    """Show the live feed, applying the portal whenever both hands are visible."""
+    while True:
+        frame = read_mirrored_frame(webcam)
+        if frame is None:
+            print("ERROR: Could not read frame.")
+            break
+        height, width = frame.shape[:2]
 
-        # ---------------------------------------------------------
-        # STEP 6f: Create portal rectangle from the four fingertips
-        # ---------------------------------------------------------
-        # Collect all four fingertip x and y coordinates
-        all_x = [thumb_1[0], index_1[0], thumb_2[0], index_2[0]]
-        all_y = [thumb_1[1], index_1[1], thumb_2[1], index_2[1]]
+        # OpenCV frames are BGR but MediaPipe expects RGB.
+        results = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        detected_hands = results.multi_hand_landmarks or []
 
-        # Find the bounding rectangle:
-        #   top-left corner  = (minimum x, minimum y)
-        #   bottom-right corner = (maximum x, maximum y)
-        portal_top_left_x = min(all_x)
-        portal_top_left_y = min(all_y)
-        portal_bottom_right_x = max(all_x)
-        portal_bottom_right_y = max(all_y)
+        if len(detected_hands) >= 2:
+            points = []
+            for hand in detected_hands[:2]:
+                points.extend(get_fingertip_positions(hand, width, height))
 
-        # Make sure the portal has a minimum size (avoid tiny rectangles)
-        portal_width = portal_bottom_right_x - portal_top_left_x
-        portal_height = portal_bottom_right_y - portal_top_left_y
+            rect = compute_portal_rect(points, width, height)
+            if rect is not None:
+                apply_portal(frame, background, rect)
+                draw_portal_overlay(frame, rect)
 
-        if portal_width > 20 and portal_height > 20:
-            # ---------------------------------------------------------
-            # STEP 6g: Create a mask for the portal region
-            # ---------------------------------------------------------
-            # A mask is a black-and-white image:
-            #   - White (255) = where the portal is (will show background)
-            #   - Black (0)   = everywhere else (will show normal frame)
+            for hand in detected_hands:
+                mp_drawing.draw_landmarks(frame, hand, mp_hands.HAND_CONNECTIONS)
 
-            # Start with a completely black mask (same size as frame)
-            mask = np.zeros((frame_height, frame_width), dtype=np.uint8)
-
-            # Draw a filled white rectangle on the mask for the portal area
-            cv2.rectangle(
-                mask,                                                   # the mask image
-                (portal_top_left_x, portal_top_left_y),                 # top-left corner
-                (portal_bottom_right_x, portal_bottom_right_y),         # bottom-right corner
-                255,                                                    # color = white (255)
-                -1                                                      # thickness = -1 means filled
-            )
-
-            # ---------------------------------------------------------
-            # STEP 6h: Replace portal region with background
-            # ---------------------------------------------------------
-            # We use the mask to combine two images:
-            #   - Where mask is white → show the background
-            #   - Where mask is black → show the current frame
-
-            # cv2.bitwise_and keeps pixels where the mask is white
-            # Extract the background region inside the portal
-            background_region = cv2.bitwise_and(background, background, mask=mask)
-
-            # Invert the mask: white becomes black and black becomes white
-            inverted_mask = cv2.bitwise_not(mask)
-
-            # Extract the current frame region OUTSIDE the portal
-            frame_region = cv2.bitwise_and(frame, frame, mask=inverted_mask)
-
-            # Combine both regions: background inside portal + frame outside
-            frame = cv2.add(background_region, frame_region)
-
-            # ---------------------------------------------------------
-            # STEP 6i: Draw green rectangle around the portal
-            # ---------------------------------------------------------
-            cv2.rectangle(
-                frame,                                                  # draw on the output frame
-                (portal_top_left_x, portal_top_left_y),                 # top-left corner
-                (portal_bottom_right_x, portal_bottom_right_y),         # bottom-right corner
-                (255, 0, 0),                                            # color = green (BGR)
-                2                                                       # thickness = 2 pixels
-            )
-
-            # ---------------------------------------------------------
-            # STEP 6j: Display "Portal Active" text
-            # ---------------------------------------------------------
-            cv2.putText(
-                frame,                          # image to draw on
-                "Portal Active",                # text to display
-                (portal_top_left_x, portal_top_left_y - 10),  # position (above the portal)
-                cv2.FONT_HERSHEY_SIMPLEX,       # font style
-                0.8,                            # font scale (size)
-                (0, 255, 0),                    # color = green (BGR)
-                2                               # thickness of the text
-            )
-
-        # ---------------------------------------------------------
-        # STEP 6k: Draw hand landmarks on the frame (optional, helpful for debugging)
-        # ---------------------------------------------------------
-        for hand_landmarks in results.multi_hand_landmarks:
-            mp_drawing.draw_landmarks(
-                frame,                                  # image to draw on
-                hand_landmarks,                         # the hand's landmarks
-                mp_hands.HAND_CONNECTIONS              # connections between landmarks
-            )
-
-    # ---------------------------------------------------------
-    # STEP 6l: Display the final output frame
-    # ---------------------------------------------------------
-    cv2.imshow("Invisible Portal - Press Q to Quit", frame)
-
-    # ---------------------------------------------------------
-    # STEP 6m: Check for quit key
-    # ---------------------------------------------------------
-    # cv2.waitKey(1) waits 1 millisecond and returns the key pressed
-    # & 0xFF ensures compatibility across different operating systems
-    key = cv2.waitKey(1) & 0xFF
-    if key == ord('q') or key == ord('Q'):
-        print("Exiting program...")
-        break
+        cv2.imshow(WINDOW_TITLE, frame)
+        if cv2.waitKey(1) & 0xFF in QUIT_KEYS:
+            print("Exiting program...")
+            break
 
 
-# ============================================================
-# SECTION 7: CLEANUP — RELEASE RESOURCES
-# ============================================================
+def main():
+    """Open the webcam, capture the background and run the portal until quit."""
+    webcam = cv2.VideoCapture(CAMERA_INDEX)
+    if not webcam.isOpened():
+        print("ERROR: Could not open webcam.")
+        return 1
 
-# Release the webcam so other programs can use it
-webcam.release()
+    try:
+        background = capture_background(webcam)
+        if background is None:
+            print("ERROR: Could not capture background.")
+            return 1
 
-# Close all OpenCV windows
-cv2.destroyAllWindows()
+        height, width = background.shape[:2]
+        print(f"Webcam resolution: {width} x {height}")
+        print("Background captured successfully!")
+        print("Now step into the frame and use both hands to create a portal.")
+        print("Press 'q' to quit.")
 
-# Close the MediaPipe hands detector to free memory
-hands_detector.close()
+        with mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=2,
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.5,
+        ) as hands:
+            run_portal_loop(webcam, hands, background)
+    except KeyboardInterrupt:
+        print("Interrupted.")
+    finally:
+        webcam.release()
+        cv2.destroyAllWindows()
 
-print("Program ended. Goodbye!")
+    print("Program ended. Goodbye!")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
